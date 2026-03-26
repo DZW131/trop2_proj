@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=2,3 PYTHONPATH=. python training/train.py -c configs/sam2.1_training/sam2.1_hiera_b+_trop2_me_nu.yaml --num-gpus 2
