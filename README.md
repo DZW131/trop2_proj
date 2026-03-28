@@ -5,4 +5,4 @@
 
 推理脚本：
 对单张图片输出结果：python infer.py --img_path assets/2025_10_30_10_55_56_511990_103761_29646.png --save_res --model bplus_menu
-对trop2/test测试集计算指标：
+对trop2/test测试集计算指标：python infer.py --mode test --eval --model trop2_me_nu --save_res
