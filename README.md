@@ -16,3 +16,10 @@ https://huggingface.co/DZW666/trop2_weights/blob/main/sam2.1_hiera_base_plus.pt
 是SAM2官方预训练B+权重，重新训练时要放到checkpoints/文件夹下
 https://huggingface.co/DZW666/trop2_weights/blob/main/1118_me_nu2_checkpoint.pt
 是该项目训练得到的权重，使用时要注意其名字和路径要与训练/测试中脚本的名字路径一样。
+
+
+
+推理结果
+{'肿瘤细胞膜': array([0.91394857, 0.74158188, 0.67851012, 0.69905655]), '肿瘤细胞核': array([0.90599448, 0.72502666, 0.65746153, 0.70291641])}
+对于单张图片的推理：python infer.py --img_path "/root/sam2_orig/sam2/datasets/trop2/test/JPEGImages/202505271603509516_69174_88938_74115_93879/0000.png" --save_res --model bplus_menu
+具体的图片见仓库中所展示
