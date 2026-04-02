@@ -3,12 +3,20 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from scipy.optimize import linear_sum_assignment
-from training.utils.train_utils import (
-    get_amp_type,
-    get_machine_local_and_dist_rank,
-    is_dist_avail_and_initialized,
-    setup_distributed_backend,
-)
+
+
+def _load_train_utils():
+    from training.utils.train_utils import (
+        get_machine_local_and_dist_rank,
+        is_dist_avail_and_initialized,
+        setup_distributed_backend,
+    )
+
+    return (
+        get_machine_local_and_dist_rank,
+        is_dist_avail_and_initialized,
+        setup_distributed_backend,
+    )
 
 
 def setup_for_distributed(is_master):
@@ -28,6 +36,7 @@ def setup_for_distributed(is_master):
 
 
 def setup_torch_dist_and_backend(cuda_conf, distributed_conf) -> None:
+    _, _, setup_distributed_backend = _load_train_utils()
     if torch.cuda.is_available():
         torch.backends.cudnn.deterministic = cuda_conf.cudnn_deterministic
         torch.backends.cudnn.benchmark = cuda_conf.cudnn_benchmark
@@ -51,6 +60,7 @@ def setup_torch_dist_and_backend(cuda_conf, distributed_conf) -> None:
 
 
 def setup_device(accelerator):
+    get_machine_local_and_dist_rank, _, _ = _load_train_utils()
     local_rank, distributed_rank = get_machine_local_and_dist_rank()
     if accelerator == "cuda":
         device = torch.device("cuda", local_rank)
@@ -63,6 +73,7 @@ def setup_device(accelerator):
 
 
 def get_rank():
+    _, is_dist_avail_and_initialized, _ = _load_train_utils()
     if not is_dist_avail_and_initialized():
         return 0
     return dist.get_rank()

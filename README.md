@@ -127,20 +127,43 @@ You also need:
 
 The recommended training entry point is the upstream launcher in [training/train.py](training/train.py), not the legacy top-level [train.py](train.py).
 
-Run the structural-prior version with:
+For ablation experiments, the launcher now supports direct CLI control of the two paper modules:
+- `--ablation baseline`
+- `--ablation contain`
+- `--ablation contrast`
+- `--ablation full`
+
+It also supports explicit switches:
+- `--with-contain`
+- `--with-contrast`
+
+Typical commands:
 
 ```bash
-python training/train.py -c configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --use-cluster 0 --num-gpus 4
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation baseline --use-cluster 0 --num-gpus 4
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation contain --use-cluster 0 --num-gpus 4
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation contrast --use-cluster 0 --num-gpus 4
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation full --use-cluster 0 --num-gpus 4
 ```
 
-Key settings in the structural-prior config:
-- `multitask_num: 2`
-- `num_maskmem: 0`
-- `multimask_output_in_sam: false`
-- `multimask_output_for_tracking: false`
-- `return_obj_ptr_for_loss: true`
-- `loss_struct_contrast: 0.2`
-- `loss_contain: 1.0`
+If you prefer explicit switches instead of presets, these also work:
+
+```bash
+python training/train.py --with-contain --use-cluster 0 --num-gpus 4
+python training/train.py --with-contrast --use-cluster 0 --num-gpus 4
+python training/train.py --with-contain --with-contrast --use-cluster 0 --num-gpus 4
+```
+
+By default, ablation runs are written to:
+
+```text
+checkpoints/ablations/baseline/
+checkpoints/ablations/contain/
+checkpoints/ablations/contrast/
+checkpoints/ablations/full/
+```
+
+You can override the save location with `--experiment-dir`, and you can still pass extra Hydra overrides with repeated `--hydra-override`.
 
 ## Inference
 
@@ -148,7 +171,7 @@ The custom inference script is [infer.py](infer.py).
 
 ### Single-image inference
 
-Example:
+Legacy named checkpoints still work:
 
 ```bash
 python infer.py --img_path assets/0000.png --model bplus_menu --save_res
@@ -159,6 +182,31 @@ Useful model options already defined in that script include:
 - `bplus_nu` for nucleus-only checkpoints
 - `bplus_menu` for paired membrane-nucleus checkpoints
 
+For single-image inference, the script reads prompts from a JSON file with the same stem as the image by default, and you can override it with `--prompt-json` if needed.
+
+For ablation checkpoints, you can now infer directly by experiment mode:
+
+```bash
+python infer.py --img_path assets/0000.png --ablation baseline --save_res
+python infer.py --img_path assets/0000.png --ablation contain --save_res
+python infer.py --img_path assets/0000.png --ablation contrast --save_res
+python infer.py --img_path assets/0000.png --ablation full --save_res
+```
+
+If needed, override the model file explicitly:
+
+```bash
+python infer.py --img_path assets/0000.png --ablation full --ckpt-path checkpoints/my_custom_run/checkpoints/checkpoint.pt --save_res
+```
+
+The same explicit module switches are also supported at inference time:
+
+```bash
+python infer.py --img_path assets/0000.png --with-contain --save_res
+python infer.py --img_path assets/0000.png --with-contrast --save_res
+python infer.py --img_path assets/0000.png --with-contain --with-contrast --save_res
+```
+
 ### Metric evaluation
 
 The same script also contains the batch evaluation entry used for quantitative testing.
@@ -167,7 +215,7 @@ When `--eval` is enabled, [infer.py](infer.py) scans the dataset folders, loads 
 Example:
 
 ```bash
-python infer.py --eval --mode test --model bplus_menu
+python infer.py --eval --mode test --ablation full --save-metrics
 ```
 
 Expected directory layout for evaluation:
@@ -194,21 +242,70 @@ So the printed result dictionary reports, for each structure label:
 - `bpq`: panoptic quality
 - `aji`: aggregated Jaccard index
 
+When `--save-metrics` is enabled, evaluation also exports:
+
+```text
+analysis/eval/<experiment>_<split>_per_case.csv
+analysis/eval/<experiment>_<split>_summary.json
+```
+
+These files are designed to feed directly into the plotting utilities under `tools/`.
+
 A typical console output has this form, with dictionary keys taken from the labels defined for the selected model in [infer.py](infer.py):
 
 ```python
 {
-    "membrane": [bdq, bsq, bpq, aji],
-    "nucleus": [bdq, bsq, bpq, aji]
+    "membrane": {
+        "bdq": 0.81,
+        "bsq": 0.84,
+        "bpq": 0.68,
+        "aji": 0.71,
+    },
+    "nucleus": {
+        "bdq": 0.86,
+        "bsq": 0.88,
+        "bpq": 0.76,
+        "aji": 0.79,
+    }
 }
 ```
 
 If you want both qualitative outputs and quantitative evaluation, use:
 
 ```bash
-python infer.py --img_path assets/0000.png --model bplus_menu --save_res
-python infer.py --eval --mode test --model bplus_menu
+python infer.py --img_path assets/0000.png --ablation full --save_res
+python infer.py --eval --mode test --ablation full --save-metrics
 ```
+
+## Visualization
+
+The repository now includes reusable visualization tools for paper figures and error analysis.
+
+### Quantitative plots
+
+Use [tools/plot_eval_metrics.py](tools/plot_eval_metrics.py) on one or more exported per-case CSV files:
+
+```bash
+python tools/plot_eval_metrics.py --csv analysis/eval/baseline_test_per_case.csv --csv analysis/eval/full_test_per_case.csv --output-dir analysis/figures
+```
+
+This script generates:
+- `metric_boxplots.png`
+- `metric_heatmap.png`
+- `metric_grouped_bars.png`
+- `metric_ratio_chart.png`
+
+These cover the boxplot, heatmap, comparison bar chart, and structure-ratio chart needs for ablation analysis.
+
+### Qualitative comparison grids
+
+Use [tools/make_qualitative_grid.py](tools/make_qualitative_grid.py) to assemble side-by-side figure panels:
+
+```bash
+python tools/make_qualitative_grid.py --image assets/0000.png --image outputs/baseline_case.png --image outputs/full_case.png --title Raw --title Baseline --title Full --output analysis/figures/case_comparison.png
+```
+
+This is useful for making paper-ready comparison figures from raw images, overlay outputs, and different ablation variants.
 
 ## Paper Experiment Suggestions
 

@@ -21,6 +21,11 @@ from hydra.utils import instantiate
 from iopath.common.file_io import g_pathmgr
 from omegaconf import OmegaConf
 
+from training.utils.experiment_utils import (
+    ABLATION_PRESETS,
+    DEFAULT_TROP2_CONFIG,
+    build_training_overrides,
+)
 from training.utils.train_utils import makedir, register_omegaconf_resolvers
 
 os.environ["HYDRA_FULL_ERROR"] = "1"
@@ -122,11 +127,27 @@ def add_pythonpath_to_sys_path():
 
 
 def main(args) -> None:
-    cfg = compose(config_name=args.config)
+    hydra_overrides = list(args.hydra_override or [])
+    ablation_overrides, resolved_ablation = build_training_overrides(
+        ablation=args.ablation,
+        with_contain=args.with_contain,
+        with_contrast=args.with_contrast,
+        experiment_dir=args.experiment_dir,
+    )
+    hydra_overrides.extend(ablation_overrides)
+    cfg = compose(config_name=args.config, overrides=hydra_overrides)
     if cfg.launcher.experiment_log_dir is None:
         cfg.launcher.experiment_log_dir = os.path.join(
             os.getcwd(), "sam2_logs", args.config
         )
+    if resolved_ablation is not None:
+        print(f"###################### Ablation Mode ####################")
+        print(
+            f"name={resolved_ablation} "
+            f"with_contain={args.with_contain or resolved_ablation in ('contain', 'full')} "
+            f"with_contrast={args.with_contrast or resolved_ablation in ('contrast', 'full')}"
+        )
+        print("#########################################################")
     print("###################### Train App Config ####################")
     print(OmegaConf.to_yaml(cfg))
     print("############################################################")
@@ -248,9 +269,41 @@ if __name__ == "__main__":
     parser.add_argument(
         "-c",
         "--config",
-        required=True,
         type=str,
-        help="path to config file (e.g. configs/sam2.1_training/sam2.1_hiera_b+_MOSE_finetune.yaml)",
+        default=DEFAULT_TROP2_CONFIG,
+        help=(
+            "path to config file "
+            f"(default: {DEFAULT_TROP2_CONFIG})"
+        ),
+    )
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        choices=sorted(ABLATION_PRESETS.keys()),
+        default=None,
+        help="preset experiment mode for ablations: baseline, contain, contrast, or full",
+    )
+    parser.add_argument(
+        "--with-contain",
+        action="store_true",
+        help="enable only the membrane-nucleus containment constraint override",
+    )
+    parser.add_argument(
+        "--with-contrast",
+        action="store_true",
+        help="enable only the structure-aware contrastive loss override",
+    )
+    parser.add_argument(
+        "--experiment-dir",
+        type=str,
+        default=None,
+        help="custom experiment output directory; defaults to checkpoints/ablations/<mode> when ablation flags are used",
+    )
+    parser.add_argument(
+        "--hydra-override",
+        action="append",
+        default=[],
+        help="extra Hydra override, can be passed multiple times",
     )
     parser.add_argument(
         "--use-cluster",
