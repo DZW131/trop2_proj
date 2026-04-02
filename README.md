@@ -297,6 +297,18 @@ This script generates:
 
 These cover the boxplot, heatmap, comparison bar chart, and structure-ratio chart needs for ablation analysis.
 
+What each figure means and how to read it:
+- `metric_boxplots.png`: shows the per-case distribution of each metric for every experiment-label pair. Use it to judge stability, variance, and outliers. If one method has a higher median and a tighter box, it usually means the gain is not only better on average but also more robust across cases.
+- `metric_heatmap.png`: shows the mean score of each metric for each experiment-label pair. Use it as the fastest global comparison view. It is useful for identifying which module improves membrane more, which improves nucleus more, and whether the full framework is consistently best across all metrics.
+- `metric_grouped_bars.png`: shows side-by-side mean metric values for each structure label under different experiments. Use it for clean ablation claims in the paper, such as "containment mainly improves membrane structure consistency" or "contrastive alignment mainly benefits nucleus discrimination."
+- `metric_ratio_chart.png`: shows the relative share of membrane and nucleus performance within each experiment for a given metric. It is useful for judging structural balance. If one method improves only one structure while hurting the other, that imbalance will be more obvious here than in a simple average score table.
+
+How to use these plots in analysis:
+- If `contain` mainly raises membrane `AJI` or `BPQ`, that supports the claim that the membrane-nucleus containment prior improves structural plausibility.
+- If `contrast` mainly reduces boxplot spread or improves nucleus-related scores, that supports the claim that structure-aware contrastive learning improves instance discrimination and feature consistency.
+- If `full` is best in both heatmap and grouped bars while also keeping balanced ratio charts, that supports the claim that the two modules are complementary rather than redundant.
+- If one method has strong mean scores but wide boxplots, you can discuss it as effective but less stable; if it has both strong means and tight spreads, you can discuss it as both accurate and robust.
+
 ### Qualitative comparison grids
 
 Use [tools/make_qualitative_grid.py](tools/make_qualitative_grid.py) to assemble side-by-side figure panels:
@@ -306,6 +318,17 @@ python tools/make_qualitative_grid.py --image assets/0000.png --image outputs/ba
 ```
 
 This is useful for making paper-ready comparison figures from raw images, overlay outputs, and different ablation variants.
+
+What qualitative grids are good for:
+- Boundary comparison: whether the predicted membrane contour is smoother, more complete, or less fragmented.
+- Containment inspection: whether the nucleus prediction stays inside the membrane region more often.
+- Small-object analysis: whether tiny nuclei or weak-boundary cells are recovered more reliably.
+- Failure-case diagnosis: whether errors come from under-segmentation, over-segmentation, merged instances, or missed instances.
+
+What conclusions you can usually support with qualitative figures:
+- `contain` should be most visible in cases where the baseline predicts nuclei leaking outside the membrane.
+- `contrast` should be most visible in crowded regions or difficult boundaries where neighboring cells are easily confused.
+- `full` should ideally show both cleaner pairwise structure and more complete object separation, which matches the intended story of "feature alignment + structural prior."
 
 ## Paper Experiment Suggestions
 
