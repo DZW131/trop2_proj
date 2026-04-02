@@ -30,6 +30,7 @@ class SAM2Train(SAM2Base):
         image_encoder,
         memory_attention=None,
         memory_encoder=None,
+        return_obj_ptr_for_loss=False,
         prob_to_use_pt_input_for_train=0.0,
         prob_to_use_pt_input_for_eval=0.0,
         prob_to_use_box_input_for_train=0.0,
@@ -73,6 +74,7 @@ class SAM2Train(SAM2Base):
         super().__init__(image_encoder, memory_attention, memory_encoder, **kwargs)
         self.use_act_ckpt_iterative_pt_sampling = use_act_ckpt_iterative_pt_sampling
         self.forward_backbone_per_frame_for_eval = forward_backbone_per_frame_for_eval
+        self.return_obj_ptr_for_loss = return_obj_ptr_for_loss
 
         # Point sampler and conditioning frames
         self.prob_to_use_pt_input_for_train = prob_to_use_pt_input_for_train
@@ -350,9 +352,11 @@ class SAM2Train(SAM2Base):
         all_frame_outputs.update(output_dict["non_cond_frame_outputs"])
         all_frame_outputs = [all_frame_outputs[t] for t in range(num_frames)]
         # Make DDP happy with activation checkpointing by removing unused keys
-        all_frame_outputs = [
-            {k: v for k, v in d.items() if k != "obj_ptr"} for d in all_frame_outputs
-        ]
+        if not self.return_obj_ptr_for_loss:
+            all_frame_outputs = [
+                {k: v for k, v in d.items() if k != "obj_ptr"}
+                for d in all_frame_outputs
+            ]
 
         return all_frame_outputs
 

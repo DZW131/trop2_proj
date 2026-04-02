@@ -134,6 +134,12 @@ class MultiStepMultiMasksAndIous(nn.Module):
         pred_obj_scores=False,
         focal_gamma_obj_score=0.0,
         focal_alpha_obj_score=-1,
+        parent_structure_idx=0,
+        child_structure_idx=1,
+        structure_contrast_temperature=0.1,
+        structure_contrast_proj_dim=128,
+        structure_contrast_hidden_dim=256,
+        containment_eps=1e-6,
     ):
         """
         This class computes the multi-step multi-mask and IoU losses.
@@ -157,12 +163,28 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert "loss_iou" in self.weight_dict
         if "loss_class" not in self.weight_dict:
             self.weight_dict["loss_class"] = 0.0
+        if "loss_struct_contrast" not in self.weight_dict:
+            self.weight_dict["loss_struct_contrast"] = 0.0
+        if "loss_contain" not in self.weight_dict:
+            self.weight_dict["loss_contain"] = 0.0
 
         self.focal_alpha_obj_score = focal_alpha_obj_score
         self.focal_gamma_obj_score = focal_gamma_obj_score
         self.supervise_all_iou = supervise_all_iou
         self.iou_use_l1_loss = iou_use_l1_loss
         self.pred_obj_scores = pred_obj_scores
+        self.parent_structure_idx = parent_structure_idx
+        self.child_structure_idx = child_structure_idx
+        self.structure_contrast_temperature = structure_contrast_temperature
+        self.containment_eps = containment_eps
+        if self.weight_dict["loss_struct_contrast"] > 0:
+            self.structure_projection = nn.Sequential(
+                nn.LazyLinear(structure_contrast_hidden_dim),
+                nn.GELU(),
+                nn.Linear(structure_contrast_hidden_dim, structure_contrast_proj_dim),
+            )
+        else:
+            self.structure_projection = nn.Identity()
 
     def forward(self, outs_batch: List[Dict], targets_batch: torch.Tensor):
         assert len(outs_batch) == len(targets_batch)
@@ -205,15 +227,107 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert len(object_score_logits_list) == len(ious_list)
 
         # accumulate the loss over prediction steps
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        losses = {
+            "loss_mask": 0,
+            "loss_dice": 0,
+            "loss_iou": 0,
+            "loss_class": 0,
+            "loss_struct_contrast": self._zero_loss(targets),
+            "loss_contain": self._zero_loss(targets),
+        }
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
                 losses, src_masks, target_masks, ious, num_objects, object_score_logits
             )
+        losses["loss_struct_contrast"] = self._structure_contrastive_loss(
+            outputs, targets
+        )
+        losses["loss_contain"] = self._containment_loss(outputs, targets)
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
+
+    def _zero_loss(self, targets: torch.Tensor) -> torch.Tensor:
+        return targets.new_zeros((), dtype=torch.float32)
+
+    def _valid_structure_targets(self, targets: torch.Tensor) -> torch.Tensor:
+        if (
+            targets.dim() != 4
+            or targets.size(1) <= self.parent_structure_idx
+            or targets.size(1) <= self.child_structure_idx
+        ):
+            return torch.zeros(targets.size(0), dtype=torch.bool, device=targets.device)
+        parent_present = torch.any(
+            (targets[:, self.parent_structure_idx] > 0).flatten(1), dim=-1
+        )
+        child_present = torch.any(
+            (targets[:, self.child_structure_idx] > 0).flatten(1), dim=-1
+        )
+        return parent_present & child_present
+
+    def _structure_contrastive_loss(
+        self, outputs: Dict, targets: torch.Tensor
+    ) -> torch.Tensor:
+        if self.weight_dict["loss_struct_contrast"] <= 0:
+            return self._zero_loss(targets)
+        obj_ptr = outputs.get("obj_ptr", None)
+        if obj_ptr is None:
+            return self._zero_loss(targets)
+        if obj_ptr.dim() == 2:
+            num_structures = targets.size(1)
+            if num_structures <= 0 or obj_ptr.size(1) % num_structures != 0:
+                return self._zero_loss(targets)
+            obj_ptr = obj_ptr.view(obj_ptr.size(0), num_structures, -1)
+        if obj_ptr.dim() != 3:
+            return self._zero_loss(targets)
+        if (
+            obj_ptr.size(1) <= self.parent_structure_idx
+            or obj_ptr.size(1) <= self.child_structure_idx
+        ):
+            return self._zero_loss(targets)
+
+        valid = self._valid_structure_targets(targets)
+        if valid.sum().item() < 2:
+            return self._zero_loss(targets)
+
+        parent_ptr = obj_ptr[valid, self.parent_structure_idx].float()
+        child_ptr = obj_ptr[valid, self.child_structure_idx].float()
+        parent_ptr = self.structure_projection(parent_ptr)
+        child_ptr = self.structure_projection(child_ptr)
+        parent_ptr = F.normalize(parent_ptr, dim=-1)
+        child_ptr = F.normalize(child_ptr, dim=-1)
+
+        logits = torch.matmul(parent_ptr, child_ptr.transpose(0, 1))
+        logits = logits / self.structure_contrast_temperature
+        labels = torch.arange(logits.size(0), device=logits.device)
+        loss_parent = F.cross_entropy(logits, labels)
+        loss_child = F.cross_entropy(logits.transpose(0, 1), labels)
+        return 0.5 * (loss_parent + loss_child)
+
+    def _containment_loss(self, outputs: Dict, targets: torch.Tensor) -> torch.Tensor:
+        if self.weight_dict["loss_contain"] <= 0:
+            return self._zero_loss(targets)
+        pred_masks = outputs.get("pred_masks_high_res", None)
+        if pred_masks is None or pred_masks.dim() != 4:
+            return self._zero_loss(targets)
+        if (
+            pred_masks.size(1) <= self.parent_structure_idx
+            or pred_masks.size(1) <= self.child_structure_idx
+        ):
+            return self._zero_loss(targets)
+
+        valid = self._valid_structure_targets(targets)
+        if not torch.any(valid).item():
+            return self._zero_loss(targets)
+
+        parent_prob = pred_masks[:, self.parent_structure_idx].float().sigmoid()
+        child_prob = pred_masks[:, self.child_structure_idx].float().sigmoid()
+        outside_mass = (child_prob * (1 - parent_prob)).flatten(1).sum(-1)
+        child_mass = child_prob.flatten(1).sum(-1)
+        contain_error = outside_mass / (child_mass + self.containment_eps)
+        return contain_error[valid].mean()
+
     def _dilate_masks(self, masks, dilation_size=5):
         """
         Dilate the masks by a given dilation size.
