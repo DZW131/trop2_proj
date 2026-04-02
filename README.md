@@ -93,16 +93,21 @@ datasets/trop2/
     Annotations_mask_nu/
       sample_id/
         0000.png
+    jsons/
+      sample_id/
+        0000.json
   test/
     JPEGImages/
     Annotations_mask_me/
     Annotations_mask_nu/
+    jsons/
 ```
 
 Notes:
 - Each sample is stored as a folder, even for static-image training.
 - `Annotations_mask_me` is the membrane target.
 - `Annotations_mask_nu` is the nucleus target.
+- `jsons/` stores prompt annotations used by the custom inference and evaluation script.
 - The structural-prior config treats this as `multitask_num: 2`.
 
 ## Environment Setup
@@ -141,6 +146,8 @@ Key settings in the structural-prior config:
 
 The custom inference script is [infer.py](infer.py).
 
+### Single-image inference
+
 Example:
 
 ```bash
@@ -151,6 +158,57 @@ Useful model options already defined in that script include:
 - `bplus_me` for membrane-only checkpoints
 - `bplus_nu` for nucleus-only checkpoints
 - `bplus_menu` for paired membrane-nucleus checkpoints
+
+### Metric evaluation
+
+The same script also contains the batch evaluation entry used for quantitative testing.
+When `--eval` is enabled, [infer.py](infer.py) scans the dataset folders, loads image-level prompts from `datasets/trop2/<mode>/jsons`, runs prediction for each structure, and prints mean metrics over the whole split.
+
+Example:
+
+```bash
+python infer.py --eval --mode test --model bplus_menu
+```
+
+Expected directory layout for evaluation:
+
+```text
+datasets/trop2/test/
+  JPEGImages/
+    sample_id/
+      0000.png
+  jsons/
+    sample_id/
+      0000.json
+```
+
+The evaluation loop is implemented by `main(args)` in [infer.py](infer.py), which repeatedly calls `evaluate(...)` and aggregates the returned tuple from [infer_utils.py](infer_utils.py):
+
+```python
+bdq_tmp, bsq_tmp, bpq_tmp, aji_score = cal_metric(...)
+```
+
+So the printed result dictionary reports, for each structure label:
+- `bdq`: detection-quality term from the PQ decomposition
+- `bsq`: segmentation-quality term from the PQ decomposition
+- `bpq`: panoptic quality
+- `aji`: aggregated Jaccard index
+
+A typical console output has this form, with dictionary keys taken from the labels defined for the selected model in [infer.py](infer.py):
+
+```python
+{
+    "membrane": [bdq, bsq, bpq, aji],
+    "nucleus": [bdq, bsq, bpq, aji]
+}
+```
+
+If you want both qualitative outputs and quantitative evaluation, use:
+
+```bash
+python infer.py --img_path assets/0000.png --model bplus_menu --save_res
+python infer.py --eval --mode test --model bplus_menu
+```
 
 ## Paper Experiment Suggestions
 
