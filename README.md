@@ -1,224 +1,178 @@
-# SAM 2: Segment Anything in Images and Videos
+# TROP2 Structural-Prior SAM2
 
-**[AI at Meta, FAIR](https://ai.meta.com/research/)**
+This repository adapts SAM 2.1 for paired membrane-nucleus segmentation on TROP2 cell images.
+The project keeps the upstream SAM2 codebase for compatibility, but the training target here is a custom static-image cell segmentation task rather than generic promptable segmentation.
 
-[Nikhila Ravi](https://nikhilaravi.com/), [Valentin Gabeur](https://gabeur.github.io/), [Yuan-Ting Hu](https://scholar.google.com/citations?user=E8DVVYQAAAAJ&hl=en), [Ronghang Hu](https://ronghanghu.com/), [Chaitanya Ryali](https://scholar.google.com/citations?user=4LWx24UAAAAJ&hl=en), [Tengyu Ma](https://scholar.google.com/citations?user=VeTSl0wAAAAJ&hl=en), [Haitham Khedr](https://hkhedr.com/), [Roman Rädle](https://scholar.google.de/citations?user=Tpt57v0AAAAJ&hl=en), [Chloe Rolland](https://scholar.google.com/citations?hl=fr&user=n-SnMhoAAAAJ), [Laura Gustafson](https://scholar.google.com/citations?user=c8IpF9gAAAAJ&hl=en), [Eric Mintun](https://ericmintun.github.io/), [Junting Pan](https://junting.github.io/), [Kalyan Vasudev Alwala](https://scholar.google.co.in/citations?user=m34oaWEAAAAJ&hl=en), [Nicolas Carion](https://www.nicolascarion.com/), [Chao-Yuan Wu](https://chaoyuan.org/), [Ross Girshick](https://www.rossgirshick.info/), [Piotr Dollár](https://pdollar.github.io/), [Christoph Feichtenhofer](https://feichtenhofer.github.io/)
+The current paper-oriented version adds a structure-prior learning framework on top of the SAM2 training stack:
+- Dual-structure decoding for membrane and nucleus masks from the same prompted cell.
+- Structure-aware contrastive alignment over object-level decoder pointers.
+- Membrane-nucleus containment constraint to enforce biologically plausible predictions.
 
-[[`Paper`](https://ai.meta.com/research/publications/sam-2-segment-anything-in-images-and-videos/)] [[`Project`](https://ai.meta.com/sam2)] [[`Demo`](https://sam2.metademolab.com/)] [[`Dataset`](https://ai.meta.com/datasets/segment-anything-video)] [[`Blog`](https://ai.meta.com/blog/segment-anything-2)] [[`BibTeX`](#citing-sam-2)]
+## Method Overview
 
-![SAM 2 architecture](assets/model_diagram.png?raw=true)
+```mermaid
+flowchart LR
+    A["Input image"] --> B["SAM2 image encoder"]
+    P["Point or box prompt"] --> C["Prompt encoder"]
+    B --> D["Shared visual features"]
+    C --> E["Membrane decoder head"]
+    C --> F["Nucleus decoder head"]
+    D --> E
+    D --> F
+    E --> G["Membrane mask, IoU, obj_ptr_m"]
+    F --> H["Nucleus mask, IoU, obj_ptr_n"]
+    G --> I["Segmentation losses"]
+    H --> I
+    G --> J["Containment loss"]
+    H --> J
+    G --> K["Structure-aware contrastive loss"]
+    H --> K
+    I --> L["Joint optimization"]
+    J --> L
+    K --> L
+```
 
-**Segment Anything Model 2 (SAM 2)** is a foundation model towards solving promptable visual segmentation in images and videos. We extend SAM to video by considering images as a video with a single frame. The model design is a simple transformer architecture with streaming memory for real-time video processing. We build a model-in-the-loop data engine, which improves model and data via user interaction, to collect [**our SA-V dataset**](https://ai.meta.com/datasets/segment-anything-video), the largest video segmentation dataset to date. SAM 2 trained on our data provides strong performance across a wide range of tasks and visual domains.
+## Project-Specific Changes
 
-![SA-V dataset](assets/sa_v_dataset.jpg?raw=true)
+The main project-specific code lives in these files:
+- [training/model/sam2.py](training/model/sam2.py)
+  Keeps decoder object pointers during training so they can be used by the new structure-aware loss.
+- [training/loss_fns.py](training/loss_fns.py)
+  Adds `loss_struct_contrast` and `loss_contain` on top of the original mask, dice, IoU, and object-score losses.
+- [sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml](sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml)
+  Main training configuration for the structural-prior variant used for paper experiments.
 
-## Latest updates
+### Structural-Prior Framework
 
-**12/11/2024 -- full model compilation for a major VOS speedup and a new `SAM2VideoPredictor` to better handle multi-object tracking**
+The current method can be summarized as:
 
-- We now support `torch.compile` of the entire SAM 2 model on videos, which can be turned on by setting `vos_optimized=True` in `build_sam2_video_predictor`, leading to a major speedup for VOS inference.
-- We update the implementation of `SAM2VideoPredictor` to support independent per-object inference, allowing us to relax the assumption of prompting for multi-object tracking and adding new objects after tracking starts.
-- See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for full details.
+1. Use a shared SAM2 image encoder and prompt encoder.
+2. Decode two coupled structures for each prompted cell: membrane and nucleus.
+3. Optimize standard segmentation losses for both structures.
+4. Align membrane and nucleus object pointers from the same cell with a contrastive objective.
+5. Penalize nucleus probability mass that falls outside the membrane prediction.
 
-**09/30/2024 -- SAM 2.1 Developer Suite (new checkpoints, training code, web demo) is released**
+The total loss is:
 
-- A new suite of improved model checkpoints (denoted as **SAM 2.1**) are released. See [Model Description](#model-description) for details.
-  * To use the new SAM 2.1 checkpoints, you need the latest model code from this repo. If you have installed an earlier version of this repo, please first uninstall the previous version via `pip uninstall SAM-2`, pull the latest code from this repo (with `git pull`), and then reinstall the repo following [Installation](#installation) below.
-- The training (and fine-tuning) code has been released. See [`training/README.md`](training/README.md) on how to get started.
-- The frontend + backend code for the SAM 2 web demo has been released. See [`demo/README.md`](demo/README.md) for details.
+`L = L_seg + lambda_ctr * L_struct_contrast + lambda_cont * L_contain`
 
-## Installation
+Where:
+- `L_seg` is the original SAM2-style segmentation objective.
+- `L_struct_contrast` aligns membrane and nucleus embeddings for the same instance.
+- `L_contain` enforces membrane-contains-nucleus structure consistency.
 
-SAM 2 needs to be installed first before use. The code requires `python>=3.10`, as well as `torch>=2.5.1` and `torchvision>=0.20.1`. Please follow the instructions [here](https://pytorch.org/get-started/locally/) to install both PyTorch and TorchVision dependencies. You can install SAM 2 on a GPU machine using:
+## Repository Layout
+
+Important folders and entry points:
+
+```text
+sam2/                         Upstream SAM2 models, decoders, configs
+training/                     Upstream SAM2 training framework plus project losses
+training/model/sam2.py        Training-time model wrapper
+training/loss_fns.py          Segmentation losses + structure-prior losses
+sam2/configs/sam2.1_training/ Project training configs
+infer.py                      Custom image inference entry point
+tools/vos_inference.py        Upstream evaluation / inference utility
+datasets/                     Local datasets (ignored by git)
+checkpoints/                  Local checkpoints (ignored by git)
+```
+
+## Dataset Layout
+
+The project expects a paired membrane-nucleus dataset following the directory structure already used by the configs:
+
+```text
+datasets/trop2/
+  train/
+    JPEGImages/
+      sample_id/
+        0000.png
+    Annotations_mask_me/
+      sample_id/
+        0000.png
+    Annotations_mask_nu/
+      sample_id/
+        0000.png
+  test/
+    JPEGImages/
+    Annotations_mask_me/
+    Annotations_mask_nu/
+```
+
+Notes:
+- Each sample is stored as a folder, even for static-image training.
+- `Annotations_mask_me` is the membrane target.
+- `Annotations_mask_nu` is the nucleus target.
+- The structural-prior config treats this as `multitask_num: 2`.
+
+## Environment Setup
+
+This repository still follows the upstream SAM2 installation pattern:
 
 ```bash
-git clone https://github.com/facebookresearch/sam2.git && cd sam2
-
-pip install -e .
+pip install -e ".[dev]"
 ```
-If you are installing on Windows, it's strongly recommended to use [Windows Subsystem for Linux (WSL)](https://learn.microsoft.com/en-us/windows/wsl/install) with Ubuntu.
 
-To use the SAM 2 predictor and run the example notebooks, `jupyter` and `matplotlib` are required and can be installed by:
+You also need:
+- Python 3.10+
+- PyTorch and TorchVision versions compatible with SAM2
+- A SAM2.1 checkpoint, for example `sam2.1_hiera_base_plus.pt`, placed under `checkpoints/`
+
+## Training
+
+The recommended training entry point is the upstream launcher in [training/train.py](training/train.py), not the legacy top-level [train.py](train.py).
+
+Run the structural-prior version with:
 
 ```bash
-pip install -e ".[notebooks]"
+python training/train.py -c configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --use-cluster 0 --num-gpus 4
 ```
 
-Note:
-1. It's recommended to create a new Python environment via [Anaconda](https://www.anaconda.com/) for this installation and install PyTorch 2.5.1 (or higher) via `pip` following https://pytorch.org/. If you have a PyTorch version lower than 2.5.1 in your current environment, the installation command above will try to upgrade it to the latest PyTorch version using `pip`.
-2. The step above requires compiling a custom CUDA kernel with the `nvcc` compiler. If it isn't already available on your machine, please install the [CUDA toolkits](https://developer.nvidia.com/cuda-toolkit-archive) with a version that matches your PyTorch CUDA version.
-3. If you see a message like `Failed to build the SAM 2 CUDA extension` during installation, you can ignore it and still use SAM 2 (some post-processing functionality may be limited, but it doesn't affect the results in most cases).
+Key settings in the structural-prior config:
+- `multitask_num: 2`
+- `num_maskmem: 0`
+- `multimask_output_in_sam: false`
+- `multimask_output_for_tracking: false`
+- `return_obj_ptr_for_loss: true`
+- `loss_struct_contrast: 0.2`
+- `loss_contain: 1.0`
 
-Please see [`INSTALL.md`](./INSTALL.md) for FAQs on potential issues and solutions.
+## Inference
 
-## Getting Started
+The custom inference script is [infer.py](infer.py).
 
-### Download Checkpoints
-
-First, we need to download a model checkpoint. All the model checkpoints can be downloaded by running:
+Example:
 
 ```bash
-cd checkpoints && \
-./download_ckpts.sh && \
-cd ..
+python infer.py --img_path assets/0000.png --model bplus_menu --save_res
 ```
 
-or individually from:
+Useful model options already defined in that script include:
+- `bplus_me` for membrane-only checkpoints
+- `bplus_nu` for nucleus-only checkpoints
+- `bplus_menu` for paired membrane-nucleus checkpoints
 
-- [sam2.1_hiera_tiny.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt)
-- [sam2.1_hiera_small.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt)
-- [sam2.1_hiera_base_plus.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)
-- [sam2.1_hiera_large.pt](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt)
+## Paper Experiment Suggestions
 
-(note that these are the improved checkpoints denoted as SAM 2.1; see [Model Description](#model-description) for details.)
+For clean ablation studies, keep these variants separate:
+- Baseline SAM2 fine-tuning
+- Baseline + containment loss
+- Baseline + structure-aware contrastive loss
+- Full structural-prior framework
 
-Then SAM 2 can be used in a few lines as follows for image and video prediction.
+This makes it easier to justify the contribution of each module in the final paper.
 
-### Image prediction
+## Notes On Repository Hygiene
 
-SAM 2 has all the capabilities of [SAM](https://github.com/facebookresearch/segment-anything) on static images, and we provide image prediction APIs that closely resemble SAM for image use cases. The `SAM2ImagePredictor` class has an easy interface for image prompting.
+This branch intentionally excludes local working artifacts such as:
+- temporary previews
+- PPT exports
+- presentation-generation scripts
+- scratch outputs under `temp/`
 
-```python
-import torch
-from sam2.build_sam import build_sam2
-from sam2.sam2_image_predictor import SAM2ImagePredictor
+They are not part of the model, training, inference, or evaluation pipeline and are ignored to keep the repository focused on code that is actually required for the project.
 
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = SAM2ImagePredictor(build_sam2(model_cfg, checkpoint))
+## Upstream Origin
 
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
-```
-
-Please refer to the examples in [image_predictor_example.ipynb](./notebooks/image_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/image_predictor_example.ipynb)) for static image use cases.
-
-SAM 2 also supports automatic mask generation on images just like SAM. Please see [automatic_mask_generator_example.ipynb](./notebooks/automatic_mask_generator_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/automatic_mask_generator_example.ipynb)) for automatic mask generation in images.
-
-### Video prediction
-
-For promptable segmentation and tracking in videos, we provide a video predictor with APIs for example to add prompts and propagate masklets throughout a video. SAM 2 supports video inference on multiple objects and uses an inference state to keep track of the interactions in each video.
-
-```python
-import torch
-from sam2.build_sam import build_sam2_video_predictor
-
-checkpoint = "./checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-predictor = build_sam2_video_predictor(model_cfg, checkpoint)
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
-```
-
-Please refer to the examples in [video_predictor_example.ipynb](./notebooks/video_predictor_example.ipynb) (also in Colab [here](https://colab.research.google.com/github/facebookresearch/sam2/blob/main/notebooks/video_predictor_example.ipynb)) for details on how to add click or box prompts, make refinements, and track multiple objects in videos.
-
-## Load from 🤗 Hugging Face
-
-Alternatively, models can also be loaded from [Hugging Face](https://huggingface.co/models?search=facebook/sam2) (requires `pip install huggingface_hub`).
-
-For image prediction:
-
-```python
-import torch
-from sam2.sam2_image_predictor import SAM2ImagePredictor
-
-predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2-hiera-large")
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    predictor.set_image(<your_image>)
-    masks, _, _ = predictor.predict(<input_prompts>)
-```
-
-For video prediction:
-
-```python
-import torch
-from sam2.sam2_video_predictor import SAM2VideoPredictor
-
-predictor = SAM2VideoPredictor.from_pretrained("facebook/sam2-hiera-large")
-
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(<your_video>)
-
-    # add new prompts and instantly get the output on the same frame
-    frame_idx, object_ids, masks = predictor.add_new_points_or_box(state, <your_prompts>):
-
-    # propagate the prompts to get masklets throughout the video
-    for frame_idx, object_ids, masks in predictor.propagate_in_video(state):
-        ...
-```
-
-## Model Description
-
-### SAM 2.1 checkpoints
-
-The table below shows the improved SAM 2.1 checkpoints released on September 29, 2024.
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2.1_hiera_tiny <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt))    |     38.9     |          91.2          |        76.5         |        71.8        |       77.3        |
-|   sam2.1_hiera_small <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt))   |      46      |          84.8          |        76.6         |        73.5        |       78.3        |
-| sam2.1_hiera_base_plus <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt)) |     80.8     |        64.1          |        78.2         |        73.7        |       78.2        |
-|   sam2.1_hiera_large <br /> ([config](sam2/configs/sam2.1/sam2.1_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt))   |    224.4     |          39.5          |        79.5         |        74.6        |       80.6        |
-
-### SAM 2 checkpoints
-
-The previous SAM 2 checkpoints released on July 29, 2024 can be found as follows:
-
-|      **Model**       | **Size (M)** |    **Speed (FPS)**     | **SA-V test (J&F)** | **MOSE val (J&F)** | **LVOS v2 (J&F)** |
-| :------------------: | :----------: | :--------------------: | :-----------------: | :----------------: | :---------------: |
-|   sam2_hiera_tiny <br /> ([config](sam2/configs/sam2/sam2_hiera_t.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_tiny.pt))   |     38.9     |          91.5          |        75.0         |        70.9        |       75.3        |
-|   sam2_hiera_small <br /> ([config](sam2/configs/sam2/sam2_hiera_s.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_small.pt))   |      46      |          85.6          |        74.9         |        71.5        |       76.4        |
-| sam2_hiera_base_plus <br /> ([config](sam2/configs/sam2/sam2_hiera_b+.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_base_plus.pt)) |     80.8     |     64.8    |        74.7         |        72.8        |       75.8        |
-|   sam2_hiera_large <br /> ([config](sam2/configs/sam2/sam2_hiera_l.yaml), [checkpoint](https://dl.fbaipublicfiles.com/segment_anything_2/072824/sam2_hiera_large.pt))   |    224.4     | 39.7 |        76.0         |        74.6        |       79.8        |
-
-Speed measured on an A100 with `torch 2.5.1, cuda 12.4`. See `benchmark.py` for an example on benchmarking (compiling all the model components). Compiling only the image encoder can be more flexible and also provide (a smaller) speed-up (set `compile_image_encoder: True` in the config).
-## Segment Anything Video Dataset
-
-See [sav_dataset/README.md](sav_dataset/README.md) for details.
-
-## Training SAM 2
-
-You can train or fine-tune SAM 2 on custom datasets of images, videos, or both. Please check the training [README](training/README.md) on how to get started.
-
-## Web demo for SAM 2
-
-We have released the frontend + backend code for the SAM 2 web demo (a locally deployable version similar to https://sam2.metademolab.com/demo). Please see the web demo [README](demo/README.md) for details.
-
-## License
-
-The SAM 2 model checkpoints, SAM 2 demo code (front-end and back-end), and SAM 2 training code are licensed under [Apache 2.0](./LICENSE), however the [Inter Font](https://github.com/rsms/inter?tab=OFL-1.1-1-ov-file) and [Noto Color Emoji](https://github.com/googlefonts/noto-emoji) used in the SAM 2 demo code are made available under the [SIL Open Font License, version 1.1](https://openfontlicense.org/open-font-license-official-text/).
-
-## Contributing
-
-See [contributing](CONTRIBUTING.md) and the [code of conduct](CODE_OF_CONDUCT.md).
-
-## Contributors
-
-The SAM 2 project was made possible with the help of many contributors (alphabetical):
-
-Karen Bergan, Daniel Bolya, Alex Bosenberg, Kai Brown, Vispi Cassod, Christopher Chedeau, Ida Cheng, Luc Dahlin, Shoubhik Debnath, Rene Martinez Doehner, Grant Gardner, Sahir Gomez, Rishi Godugu, Baishan Guo, Caleb Ho, Andrew Huang, Somya Jain, Bob Kamma, Amanda Kallet, Jake Kinney, Alexander Kirillov, Shiva Koduvayur, Devansh Kukreja, Robert Kuo, Aohan Lin, Parth Malani, Jitendra Malik, Mallika Malhotra, Miguel Martin, Alexander Miller, Sasha Mitts, William Ngan, George Orlin, Joelle Pineau, Kate Saenko, Rodrick Shepard, Azita Shokrpour, David Soofian, Jonathan Torres, Jenny Truong, Sagar Vaze, Meng Wang, Claudette Ward, Pengchuan Zhang.
-
-Third-party code: we use a GPU-based connected component algorithm adapted from [`cc_torch`](https://github.com/zsef123/Connected_components_PyTorch) (with its license in [`LICENSE_cctorch`](./LICENSE_cctorch)) as an optional post-processing step for the mask predictions.
-
-## Citing SAM 2
-
-If you use SAM 2 or the SA-V dataset in your research, please use the following BibTeX entry.
-
-```bibtex
-@article{ravi2024sam2,
-  title={SAM 2: Segment Anything in Images and Videos},
-  author={Ravi, Nikhila and Gabeur, Valentin and Hu, Yuan-Ting and Hu, Ronghang and Ryali, Chaitanya and Ma, Tengyu and Khedr, Haitham and R{\"a}dle, Roman and Rolland, Chloe and Gustafson, Laura and Mintun, Eric and Pan, Junting and Alwala, Kalyan Vasudev and Carion, Nicolas and Wu, Chao-Yuan and Girshick, Ross and Doll{\'a}r, Piotr and Feichtenhofer, Christoph},
-  journal={arXiv preprint arXiv:2408.00714},
-  url={https://arxiv.org/abs/2408.00714},
-  year={2024}
-}
-```
+This project is built on top of Meta's SAM2 codebase.
+The repository still contains much of the upstream structure so existing SAM2 utilities and configs continue to work, but the root README now documents the TROP2 project rather than the generic upstream release.

@@ -15,3 +15,8 @@ logs/
 *.pt
 checkpoints/
 datasets/
+temp/
+*_temp.pptx
+tools/make_trop2_arch_ppt.py
+tools/make_trop2_paper_figure_ppt.py
+tools/make_trop2_sam2style_ppt.py
