@@ -242,6 +242,9 @@ So the printed result dictionary reports, for each structure label:
 - `bpq`: panoptic quality
 - `aji`: aggregated Jaccard index
 
+The exported structure labels are normalized to the English names `membrane` and `nucleus`.
+Legacy Chinese annotation labels are still accepted when reading existing JSON prompt files.
+
 When `--save-metrics` is enabled, evaluation also exports:
 
 ```text

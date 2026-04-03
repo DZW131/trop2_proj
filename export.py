@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 import torch
 from infer_utils import get_prompt
+from label_utils import MEMBRANE_LABEL, collect_shape_points_by_label
 from PIL import Image
 from sam2.build_sam import build_sam2
 from torch.nn import functional as F
@@ -29,12 +30,14 @@ def infer():
     img_tensor = (ToTensor()(img))[
         None, ...
     ].cuda()  # Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    with open(prompts_json_path, "r", encoding="utf-8") as f:
+        prompt_payload = json.load(f)
     data = {
-        "key": [
-            item["points"]
-            for item in json.load(open(prompts_json_path))["shapes"]
-            if item["label"] == "肿瘤细胞膜"
-        ]
+        "key": collect_shape_points_by_label(
+            prompt_payload["shapes"],
+            MEMBRANE_LABEL,
+            allow_prompt_aliases=True,
+        )
     }
     prompts = {}
     prompts = get_prompt(data, prompts, "key")

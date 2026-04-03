@@ -1,7 +1,14 @@
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from label_utils import normalize_label_name
 
 
 DEFAULT_METRICS = ["bdq", "bsq", "bpq", "aji"]
@@ -16,6 +23,8 @@ def load_metric_tables(csv_paths):
         df = pd.read_csv(csv_path)
         if "experiment" not in df.columns:
             df["experiment"] = csv_path.stem.replace("_per_case", "")
+        if "label" in df.columns:
+            df["label"] = df["label"].map(normalize_label_name)
         frames.append(df)
     if not frames:
         raise ValueError("No metric CSV files were provided.")

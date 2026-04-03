@@ -11,6 +11,13 @@ import numpy as np
 import torch
 from PIL import Image
 from infer_utils import *
+from label_utils import (
+    MEMBRANE_LABEL,
+    NUCLEUS_LABEL,
+    collect_shape_points_by_label,
+    labels_match,
+    normalize_label_name,
+)
 from omegaconf import OmegaConf
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -30,9 +37,6 @@ from training.utils.experiment_utils import (
 )
 from training.utils.utils import count_trainable_params
 from utils import *
-
-MEMBRANE_LABEL = "\u80bf\u7624\u7ec6\u80de\u819c"
-NUCLEUS_LABEL = "\u80bf\u7624\u7ec6\u80de\u6838"
 
 LEGACY_MODELS = {
     "custom": {
@@ -143,7 +147,7 @@ def load_model(args):
 
 def resolve_prompt_label(args):
     if args.prompt_label is not None:
-        return args.prompt_label
+        return normalize_label_name(args.prompt_label)
     model_cfg = require_labeled_model_cfg()
     return model_cfg.label[0]
 
@@ -153,13 +157,28 @@ def sanitize_tag(value):
 
 
 def collect_shapes_by_label(shapes, label):
-    return [item["points"] for item in shapes if item.get("label") == label]
+    return collect_shape_points_by_label(
+        shapes, label, allow_prompt_aliases=False
+    )
+
+
+def collect_prompt_shapes_by_label(shapes, label):
+    return collect_shape_points_by_label(
+        shapes, label, allow_prompt_aliases=True
+    )
 
 
 def build_output_payload(template, predicted_labels):
-    predicted_labels = set(predicted_labels)
+    predicted_labels = [normalize_label_name(label) for label in predicted_labels]
     preserved_shapes = [
-        item for item in template.get("shapes", []) if item.get("label") not in predicted_labels
+        item
+        for item in template.get("shapes", [])
+        if all(
+            not labels_match(
+                item.get("label"), predicted_label, allow_prompt_aliases=True
+            )
+            for predicted_label in predicted_labels
+        )
     ]
     payload = {key: value for key, value in template.items() if key != "shapes"}
     payload["shapes"] = preserved_shapes
@@ -262,14 +281,26 @@ def inference(prompts, key, image_hw, order=0, step=1, multimask_output=False):
 def evaluate(img_path, json_path, keys=None, save_res=False):
     model_cfg = require_labeled_model_cfg()
     keys = keys or [model_cfg.label[0]]
-    target_label = keys[0]
+    target_label = normalize_label_name(keys[0])
 
     img = Image.open(img_path)
     image = np.array(img.copy().convert("RGB"))
     with open(json_path, "r", encoding="utf-8") as f:
         template = json.load(f)
 
-    data = {target_label: collect_shapes_by_label(template["shapes"], target_label)}
+    prompt_shapes = collect_prompt_shapes_by_label(template["shapes"], target_label)
+    if not prompt_shapes:
+        raise ValueError(
+            f"No prompt shapes found for label '{target_label}' in {json_path}."
+        )
+
+    gt_shapes = collect_shapes_by_label(template["shapes"], target_label)
+    if not gt_shapes:
+        raise ValueError(
+            f"No region shapes found for label '{target_label}' in {json_path}."
+        )
+
+    data = {target_label: prompt_shapes}
     prompts = get_prompt(data, {}, target_label)
     print("prompt count:", sum(len(prompts[key]) for key in prompts))
     predictor.set_image(image)
@@ -280,7 +311,7 @@ def evaluate(img_path, json_path, keys=None, save_res=False):
         order=model_cfg.order[model_cfg.label.index(target_label)],
         multimask_output=False,
     )
-    inst_maps = get_inst_maps(image, data[target_label])
+    inst_maps = get_inst_maps(image, gt_shapes)
     mask_data = data_format(mask_data, crop_box=[0, 0, image.shape[1], image.shape[0]])
     bdq_tmp, bsq_tmp, bpq_tmp, aji_score = cal_metric(
         inst_maps, mask_data, image.shape[0], image.shape[1]
@@ -301,7 +332,7 @@ def evaluate(img_path, json_path, keys=None, save_res=False):
 def infer(img_path, save_res=True, prompt_json_path=None, prompt_label=None):
     model_cfg = require_labeled_model_cfg()
     prompt_json_path = prompt_json_path or str(Path(img_path).with_suffix(".json"))
-    prompt_label = prompt_label or model_cfg.label[0]
+    prompt_label = normalize_label_name(prompt_label or model_cfg.label[0])
 
     img = Image.open(img_path)
     image = np.array(img.copy().convert("RGB"))
@@ -309,7 +340,7 @@ def infer(img_path, save_res=True, prompt_json_path=None, prompt_label=None):
     with open(prompt_json_path, "r", encoding="utf-8") as f:
         template = json.load(f)
 
-    prompt_shapes = collect_shapes_by_label(template["shapes"], prompt_label)
+    prompt_shapes = collect_prompt_shapes_by_label(template["shapes"], prompt_label)
     if not prompt_shapes:
         raise ValueError(
             f"No prompt shapes found for label '{prompt_label}' in {prompt_json_path}."
