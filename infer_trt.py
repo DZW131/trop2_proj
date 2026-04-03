@@ -1,6 +1,6 @@
 import json
 import os
-from collections import namedtuple, OrderedDict
+from collections import OrderedDict, namedtuple
 
 import cv2
 import numpy as np
@@ -8,6 +8,7 @@ import tensorrt as trt
 import torch
 import torch.nn as nn
 from infer_utils import get_prompt
+from label_utils import MEMBRANE_LABEL, collect_shape_points_by_label
 from PIL import Image
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
@@ -83,10 +84,10 @@ class InferByRt(nn.Module):
         # YOLOv5 inference
         # b, ch, h, w = im.shape  # batch, channel, height, width
 
-
         if (
             self.dynamic
-            and input[self.input_names[-1]].shape != self.bindings[self.input_names[-1]].shape
+            and input[self.input_names[-1]].shape
+            != self.bindings[self.input_names[-1]].shape
         ):
             for input_name in self.input_names:
                 self.context.set_input_shape(input_name, input[input_name].shape)
@@ -113,7 +114,6 @@ class InferByRt(nn.Module):
             return self.from_numpy(y)
 
     def from_numpy(self, x):
-
         return torch.from_numpy(x).to(self.device) if isinstance(x, np.ndarray) else x
 
 
@@ -123,17 +123,20 @@ if __name__ == "__main__":
     prompts_json_path = img_path.replace(".png", ".json")
     img = Image.open(img_path)
     from torchvision.transforms import Normalize, Resize, ToTensor
+
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     img_tensor = (ToTensor()(img))[None, ...]
     image = np.array(img.copy().convert("RGB"))
+    with open(prompts_json_path, "r", encoding="utf-8") as f:
+        prompt_payload = json.load(f)
 
     data = {
-        "key": [
-            item["points"]
-            for item in json.load(open(prompts_json_path))["shapes"]
-            if item["label"] == "肿瘤细胞膜"
-        ]
+        "key": collect_shape_points_by_label(
+            prompt_payload["shapes"],
+            MEMBRANE_LABEL,
+            allow_prompt_aliases=True,
+        )
     }
     prompts = {}
     prompts = get_prompt(data, prompts, "key")
@@ -143,7 +146,7 @@ if __name__ == "__main__":
     # model = InferByRt(onnx_path)
     encoder_model = InferByRt("sam2.encoder_fp32.engine")
     decoder_model = InferByRt("sam2.decoder_fp32.engine")
-    
+
     # with open(img_path, 'rb') as f:
     #     value_buf = f.read()
     # img = imfrombytes(value_buf, float32=False)
@@ -161,7 +164,7 @@ if __name__ == "__main__":
         "point_coords": point_coords,
         "point_labels": point_labels,
     }
-    
+
     output = encoder_model(input)
     input.update(output)
     start = time.time()
