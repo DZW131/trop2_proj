@@ -15,30 +15,56 @@ ABLATION_PRESETS: Dict[str, Dict[str, object]] = {
     "baseline": {
         "with_contain": False,
         "with_contrast": False,
+        "with_ring": False,
         "loss_contain": 0.0,
         "loss_struct_contrast": 0.0,
+        "loss_ring": 0.0,
         "return_obj_ptr_for_loss": False,
     },
     "contain": {
         "with_contain": True,
         "with_contrast": False,
+        "with_ring": False,
         "loss_contain": 1.0,
         "loss_struct_contrast": 0.0,
+        "loss_ring": 0.0,
         "return_obj_ptr_for_loss": False,
     },
     "contrast": {
         "with_contain": False,
         "with_contrast": True,
+        "with_ring": False,
         "loss_contain": 0.0,
         "loss_struct_contrast": 0.2,
+        "loss_ring": 0.0,
         "return_obj_ptr_for_loss": True,
     },
     "full": {
         "with_contain": True,
         "with_contrast": True,
+        "with_ring": False,
         "loss_contain": 1.0,
         "loss_struct_contrast": 0.2,
+        "loss_ring": 0.0,
         "return_obj_ptr_for_loss": True,
+    },
+    "ring": {
+        "with_contain": False,
+        "with_contrast": False,
+        "with_ring": True,
+        "loss_contain": 0.0,
+        "loss_struct_contrast": 0.0,
+        "loss_ring": 0.5,
+        "return_obj_ptr_for_loss": False,
+    },
+    "hierarchical_full": {
+        "with_contain": True,
+        "with_contrast": False,
+        "with_ring": True,
+        "loss_contain": 1.0,
+        "loss_struct_contrast": 0.0,
+        "loss_ring": 0.5,
+        "return_obj_ptr_for_loss": False,
     },
 }
 
@@ -106,6 +132,7 @@ def build_training_overrides(
             "++trainer.loss.all.weight_dict.loss_struct_contrast="
             f"{preset['loss_struct_contrast']}"
         ),
+        f"++trainer.loss.all.weight_dict.loss_ring={preset['loss_ring']}",
         (
             "++trainer.model.return_obj_ptr_for_loss="
             f"{str(bool(preset['return_obj_ptr_for_loss'])).lower()}"

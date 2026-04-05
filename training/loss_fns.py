@@ -140,6 +140,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         structure_contrast_proj_dim=128,
         structure_contrast_hidden_dim=256,
         containment_eps=1e-6,
+        ring_region_eps=1e-6,
     ):
         """
         This class computes the multi-step multi-mask and IoU losses.
@@ -167,6 +168,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
             self.weight_dict["loss_struct_contrast"] = 0.0
         if "loss_contain" not in self.weight_dict:
             self.weight_dict["loss_contain"] = 0.0
+        if "loss_ring" not in self.weight_dict:
+            self.weight_dict["loss_ring"] = 0.0
 
         self.focal_alpha_obj_score = focal_alpha_obj_score
         self.focal_gamma_obj_score = focal_gamma_obj_score
@@ -177,6 +180,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
         self.child_structure_idx = child_structure_idx
         self.structure_contrast_temperature = structure_contrast_temperature
         self.containment_eps = containment_eps
+        self.ring_region_eps = ring_region_eps
         if self.weight_dict["loss_struct_contrast"] > 0:
             self.structure_projection = nn.Sequential(
                 nn.LazyLinear(structure_contrast_hidden_dim),
@@ -234,6 +238,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             "loss_class": 0,
             "loss_struct_contrast": self._zero_loss(targets),
             "loss_contain": self._zero_loss(targets),
+            "loss_ring": self._zero_loss(targets),
         }
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
@@ -245,6 +250,7 @@ class MultiStepMultiMasksAndIous(nn.Module):
             outputs, targets
         )
         losses["loss_contain"] = self._containment_loss(outputs, targets)
+        losses["loss_ring"] = self._ring_region_consistency_loss(outputs, targets)
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 
@@ -327,6 +333,41 @@ class MultiStepMultiMasksAndIous(nn.Module):
         child_mass = child_prob.flatten(1).sum(-1)
         contain_error = outside_mass / (child_mass + self.containment_eps)
         return contain_error[valid].mean()
+
+    def _ring_region_consistency_loss(
+        self, outputs: Dict, targets: torch.Tensor
+    ) -> torch.Tensor:
+        if self.weight_dict["loss_ring"] <= 0:
+            return self._zero_loss(targets)
+        pred_masks = outputs.get("pred_masks_high_res", None)
+        if pred_masks is None or pred_masks.dim() != 4:
+            return self._zero_loss(targets)
+        if (
+            pred_masks.size(1) <= self.parent_structure_idx
+            or pred_masks.size(1) <= self.child_structure_idx
+        ):
+            return self._zero_loss(targets)
+
+        valid = self._valid_structure_targets(targets)
+        if not torch.any(valid).item():
+            return self._zero_loss(targets)
+
+        parent_prob = pred_masks[:, self.parent_structure_idx].float().sigmoid()
+        child_prob = pred_masks[:, self.child_structure_idx].float().sigmoid()
+        ring_prob = parent_prob * (1 - child_prob)
+
+        parent_target = (targets[:, self.parent_structure_idx] > 0).float()
+        child_target = (targets[:, self.child_structure_idx] > 0).float()
+        ring_target = torch.clamp(parent_target - child_target, min=0.0, max=1.0)
+
+        bce = F.binary_cross_entropy(ring_prob, ring_target, reduction="none")
+        bce = bce.flatten(1).mean(-1)
+
+        intersection = (ring_prob * ring_target).flatten(1).sum(-1)
+        denominator = ring_prob.flatten(1).sum(-1) + ring_target.flatten(1).sum(-1)
+        dice = 1 - (2 * intersection + 1.0) / (denominator + 1.0 + self.ring_region_eps)
+
+        return (bce + dice)[valid].mean()
 
     def _dilate_masks(self, masks, dilation_size=5):
         """

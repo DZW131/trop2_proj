@@ -8,6 +8,10 @@ The current paper-oriented version adds a structure-prior learning framework on 
 - Structure-aware contrastive alignment over object-level decoder pointers.
 - Membrane-nucleus containment constraint to enforce biologically plausible predictions.
 
+An alternative paper branch can also replace the contrastive module with a denser
+hierarchical-region objective:
+- Hierarchical region decomposition consistency over the membrane-minus-nucleus ring.
+
 ## Method Overview
 
 ```mermaid
@@ -38,9 +42,11 @@ The main project-specific code lives in these files:
 - [training/model/sam2.py](training/model/sam2.py)
   Keeps decoder object pointers during training so they can be used by the new structure-aware loss.
 - [training/loss_fns.py](training/loss_fns.py)
-  Adds `loss_struct_contrast` and `loss_contain` on top of the original mask, dice, IoU, and object-score losses.
+  Adds `loss_struct_contrast`, `loss_contain`, and `loss_ring` on top of the original mask, dice, IoU, and object-score losses.
 - [sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml](sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml)
   Main training configuration for the structural-prior variant used for paper experiments.
+- [sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml](sam2/configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml)
+  Alternative configuration that drops contrastive alignment and supervises the membrane-minus-nucleus ring region instead.
 
 ### Structural-Prior Framework
 
@@ -144,6 +150,13 @@ python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_
 python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation contain --use-cluster 0 --num-gpus 4
 python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation contrast --use-cluster 0 --num-gpus 4
 python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_structural_priors.yaml --ablation full --use-cluster 0 --num-gpus 4
+```
+
+For the replacement hierarchical-region idea, use the dedicated config and the new presets:
+
+```bash
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml --ablation ring --use-cluster 0 --num-gpus 4
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml --ablation hierarchical_full --use-cluster 0 --num-gpus 4
 ```
 
 If you prefer explicit switches instead of presets, these also work:

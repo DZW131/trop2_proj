@@ -141,11 +141,13 @@ def main(args) -> None:
             os.getcwd(), "sam2_logs", args.config
         )
     if resolved_ablation is not None:
+        preset = ABLATION_PRESETS[resolved_ablation]
         print(f"###################### Ablation Mode ####################")
         print(
             f"name={resolved_ablation} "
-            f"with_contain={args.with_contain or resolved_ablation in ('contain', 'full')} "
-            f"with_contrast={args.with_contrast or resolved_ablation in ('contrast', 'full')}"
+            f"with_contain={preset.get('with_contain', False)} "
+            f"with_contrast={preset.get('with_contrast', False)} "
+            f"with_ring={preset.get('with_ring', False)}"
         )
         print("#########################################################")
     print("###################### Train App Config ####################")
@@ -281,7 +283,7 @@ if __name__ == "__main__":
         type=str,
         choices=sorted(ABLATION_PRESETS.keys()),
         default=None,
-        help="preset experiment mode for ablations: baseline, contain, contrast, or full",
+        help="preset experiment mode for ablations; includes baseline, contain, contrast, full, ring, and hierarchical_full",
     )
     parser.add_argument(
         "--with-contain",
