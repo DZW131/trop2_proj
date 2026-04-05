@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Dict, List
 
 import torch
@@ -360,11 +361,25 @@ class MultiStepMultiMasksAndIous(nn.Module):
         child_target = (targets[:, self.child_structure_idx] > 0).float()
         ring_target = torch.clamp(parent_target - child_target, min=0.0, max=1.0)
 
-        bce = F.binary_cross_entropy(ring_prob, ring_target, reduction="none")
-        bce = bce.flatten(1).mean(-1)
+        autocast_ctx = (
+            torch.cuda.amp.autocast(enabled=False)
+            if pred_masks.device.type == "cuda"
+            else nullcontext()
+        )
+        with autocast_ctx:
+            ring_prob_fp32 = ring_prob.float().clamp(
+                min=self.ring_region_eps, max=1.0 - self.ring_region_eps
+            )
+            ring_target_fp32 = ring_target.float()
+            bce = F.binary_cross_entropy(
+                ring_prob_fp32, ring_target_fp32, reduction="none"
+            )
+            bce = bce.flatten(1).mean(-1)
 
-        intersection = (ring_prob * ring_target).flatten(1).sum(-1)
-        denominator = ring_prob.flatten(1).sum(-1) + ring_target.flatten(1).sum(-1)
+        intersection = (ring_prob_fp32 * ring_target_fp32).flatten(1).sum(-1)
+        denominator = (
+            ring_prob_fp32.flatten(1).sum(-1) + ring_target_fp32.flatten(1).sum(-1)
+        )
         dice = 1 - (2 * intersection + 1.0) / (denominator + 1.0 + self.ring_region_eps)
 
         return (bce + dice)[valid].mean()
