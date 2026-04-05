@@ -310,16 +310,20 @@ class Trainer:
             process_group = None
             self.model.register_comm_hook(process_group, hook)
 
+
     def _move_to_device(self):
         logging.info(
             f"Moving components to device {self.device} and local rank {self.local_rank}."
         )
 
         self.model.to(self.device)
+        if self.loss is not None:
+            self.loss.to(self.device)
 
         logging.info(
             f"Done moving components to device {self.device} and local rank {self.local_rank}."
         )
+
 
     def save_checkpoint(self, epoch, checkpoint_names=None):
         checkpoint_folder = self.checkpoint_conf.save_dir
