@@ -175,6 +175,12 @@ python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_
 python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml --ablation hierarchical_full --use-cluster 0 --num-gpus 1
 ```
 
+Recommended tuned follow-up:
+
+```bash
+python training/train.py --config configs/sam2.1_training/sam2.1_hiera_b+_trop2_hierarchical_priors.yaml --use-cluster 0 --num-gpus 1 --hydra-override ++trainer.loss.all.weight_dict.loss_contain=0.3 --hydra-override ++trainer.loss.all.weight_dict.loss_ring=0.5 --hydra-override ++launcher.experiment_log_dir=checkpoints/ablations/hierarchical_full_tune
+```
+
 Default branch weights:
 
 - `loss_contain = 1.0`
@@ -231,6 +237,12 @@ Batch evaluation uses the same script:
 
 ```bash
 python infer.py --eval --mode test --ablation hierarchical_full --save-metrics
+```
+
+For the tuned checkpoint:
+
+```bash
+python infer.py --eval --mode test --ckpt-path checkpoints/ablations/hierarchical_full_tune/checkpoints/checkpoint.pt --experiment-tag hierarchical_full_tune --save-metrics
 ```
 
 Expected structure:
